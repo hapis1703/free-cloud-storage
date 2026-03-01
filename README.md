@@ -89,7 +89,7 @@ FREE-DRIVE/
 
 ```bash
 git clone https://github.com/hapis1703/free-cloud-storage.git
-cd FREE-DRIVE
+cd free-cloud-storage
 ```
 
 ## 2️⃣ Install dependencies
@@ -128,13 +128,6 @@ CHANNEL_ID=-1001234567890
 
 - Do NOT commit `.env`
 - Add `.env` to `.gitignore`
-
-You may create `.env.example` like this:
-
-```
-TOKEN=
-CHANNEL_ID=
-```
 
 ---
 
