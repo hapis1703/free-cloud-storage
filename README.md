@@ -136,7 +136,7 @@ CHANNEL_ID=-1001234567890
 Run:
 
 ```bash
-node cloud.js
+npm run start
 ```
 
 You will see:
