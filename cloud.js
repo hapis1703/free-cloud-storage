@@ -51,7 +51,7 @@ function splitFile(filePath) {
   return chunks;
 }
 
-// ================= UPLOAD (STREAMING SAFE >2GB) =================
+// ================= UPLOAD (WITH PROGRESS + ETA) =================
 async function uploadFile() {
   const filePath = readline.question("Masukkan path file: ");
 
@@ -62,8 +62,12 @@ async function uploadFile() {
 
   const originalName = path.basename(filePath);
   const stats = fs.statSync(filePath);
+  const totalSize = stats.size;
 
-  console.log(`📦 Ukuran file: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
+  console.log(`📦 Ukuran file: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
+  const startTime = Date.now();
+  let uploadedBytes = 0;
 
   const now = new Date();
   const timestamp =
@@ -82,7 +86,7 @@ async function uploadFile() {
   let partIndex = 0;
   let fileIds = [];
 
-  console.log("🚀 Mulai upload...");
+  console.log("🚀 Mulai upload...\n");
 
   for await (const chunk of readStream) {
     const tempFile = `temp_${timestamp}_${partIndex}`;
@@ -98,20 +102,29 @@ async function uploadFile() {
     );
 
     fileIds.push(sent.document.file_id);
-
     fs.unlinkSync(tempFile);
 
-    console.log(`✔ Part ${partIndex + 1} uploaded`);
+    uploadedBytes += chunk.length;
+
+    const percent = ((uploadedBytes / totalSize) * 100).toFixed(2);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed = (uploadedBytes / 1024 / 1024 / elapsed).toFixed(2);
+    const remainingBytes = totalSize - uploadedBytes;
+    const eta = (remainingBytes / 1024 / 1024 / speed).toFixed(1);
+
+    process.stdout.write(
+      `\r📊 ${percent}% | ⚡ ${speed} MB/s | ⏳ ETA ${eta}s`,
+    );
 
     partIndex++;
   }
+
+  console.log("\n\n✅ Upload selesai!");
 
   await dbRun("INSERT INTO files (original_name, file_ids) VALUES (?, ?)", [
     originalName,
     JSON.stringify(fileIds),
   ]);
-
-  console.log("✅ Upload selesai!");
 }
 
 // ================= LIST =================
@@ -131,7 +144,7 @@ async function listFiles() {
   return rows;
 }
 
-// ================= DOWNLOAD =================
+// ================= DOWNLOAD (WITH PROGRESS + ETA) =================
 async function downloadFile() {
   const rows = await listFiles();
   if (!rows.length) return;
@@ -146,27 +159,74 @@ async function downloadFile() {
   const fileData = rows[index];
   const fileIds = JSON.parse(fileData.file_ids);
 
-  console.log("⬇ Downloading & merging...");
+  console.log("⬇ Downloading & merging...\n");
 
   const writeStream = fs.createWriteStream(fileData.original_name);
 
-  for (const fileId of fileIds) {
-    const fileInfo = await bot.getFile(fileId);
+  const startTime = Date.now();
+  let downloadedBytes = 0;
+
+  for (let i = 0; i < fileIds.length; i++) {
+    const fileInfo = await bot.getFile(fileIds[i]);
     const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
 
     const response = await axios.get(fileUrl, { responseType: "stream" });
 
+    const contentLength = parseInt(response.headers["content-length"] || 0);
+
     await new Promise((resolve) => {
+      response.data.on("data", (chunk) => {
+        downloadedBytes += chunk.length;
+
+        const elapsed = (Date.now() - startTime) / 1000;
+        const speed = (downloadedBytes / 1024 / 1024 / elapsed).toFixed(2);
+        const percent = (((i + 1) / fileIds.length) * 100).toFixed(2);
+        const eta = (
+          ((fileIds.length - (i + 1)) * contentLength) /
+          1024 /
+          1024 /
+          speed
+        ).toFixed(1);
+
+        process.stdout.write(
+          `\r📊 ${percent}% | ⚡ ${speed} MB/s | ⏳ ETA ${eta}s`,
+        );
+      });
+
       response.data.pipe(writeStream, { end: false });
       response.data.on("end", resolve);
     });
   }
 
   writeStream.end();
-
   await new Promise((resolve) => writeStream.on("finish", resolve));
 
-  console.log("✅ Download selesai:", fileData.original_name);
+  console.log("\n\n✅ Download selesai!");
+}
+
+// ================= DELETE =================
+async function deleteFile() {
+  const rows = await listFiles();
+
+  if (!rows.length) return;
+
+  const choice = readline.question(
+    "\nMasukkan nomor file yang ingin dihapus: ",
+  );
+  const index = parseInt(choice) - 1;
+
+  if (isNaN(index) || index < 0 || index >= rows.length) {
+    console.log("❌ Pilihan tidak valid.");
+    return;
+  }
+
+  const selected = rows[index];
+
+  await dbRun("DELETE FROM files WHERE id = ?", [selected.id]);
+
+  console.log(
+    `🗑 File "${selected.original_name}" berhasil dihapus dari database.`,
+  );
 }
 
 // ================= MENU =================
@@ -176,14 +236,16 @@ async function mainMenu() {
     console.log("1. Upload File");
     console.log("2. List File");
     console.log("3. Download File");
-    console.log("4. Exit");
+    console.log("4. Delete File");
+    console.log("5. Exit");
 
     const choice = readline.questionInt("Pilih menu: ");
 
     if (choice === 1) await uploadFile();
     else if (choice === 2) await listFiles();
     else if (choice === 3) await downloadFile();
-    else if (choice === 4) process.exit();
+    else if (choice === 4) await deleteFile();
+    else if (choice === 5) process.exit();
     else console.log("❌ Pilihan tidak valid.");
   }
 }
