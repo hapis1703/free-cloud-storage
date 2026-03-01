@@ -4,9 +4,15 @@ const path = require("path");
 const axios = require("axios");
 const sqlite3 = require("sqlite3").verbose();
 const readline = require("readline-sync");
+require("dotenv").config();
 
-const TOKEN = "8408247572:AAE58HE4GltRc3IyNfXybkUwpR4bF_nFxGM";
-const CHANNEL_ID = "-1003708889544";
+const TOKEN = process.env.TOKEN;
+const CHANNEL_ID = process.env.CHANNEL_ID;
+
+if (!TOKEN || !CHANNEL_ID) {
+  console.error("❌ TOKEN or CHANNEL_ID is missing in .env file");
+  process.exit(1);
+}
 const CHUNK_SIZE = 18 * 1024 * 1024;
 
 const bot = new TelegramBot(TOKEN);
@@ -39,22 +45,20 @@ CREATE TABLE IF NOT EXISTS files (
 )
 `);
 
-// ================= SPLIT =================
-function splitFile(filePath) {
-  const buffer = fs.readFileSync(filePath);
-  const chunks = [];
-
-  for (let i = 0; i < buffer.length; i += CHUNK_SIZE) {
-    chunks.push(buffer.slice(i, i + CHUNK_SIZE));
-  }
-
-  return chunks;
-}
-
 // ================= UPLOAD (WITH PROGRESS + ETA) =================
 async function uploadFile() {
-  const filePath = readline.question("Masukkan path file: ");
+  let filePath = readline.question("Masukkan path file: ");
 
+  // Trim whitespace
+  filePath = filePath.trim();
+
+  // Remove surrounding quotes if exist
+  if (
+    (filePath.startsWith('"') && filePath.endsWith('"')) ||
+    (filePath.startsWith("'") && filePath.endsWith("'"))
+  ) {
+    filePath = filePath.slice(1, -1);
+  }
   if (!fs.existsSync(filePath)) {
     console.log("❌ File tidak ditemukan.");
     return;
