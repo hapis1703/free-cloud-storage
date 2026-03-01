@@ -4,6 +4,7 @@ const path = require("path");
 const axios = require("axios");
 const sqlite3 = require("sqlite3").verbose();
 const readline = require("readline-sync");
+const uuid = require("uuid");
 require("dotenv").config();
 
 const TOKEN = process.env.TOKEN;
@@ -96,7 +97,8 @@ async function uploadFile() {
     const tempFile = `temp_${timestamp}_${partIndex}`;
     fs.writeFileSync(tempFile, chunk);
 
-    const chunkName = `${timestamp}_${partIndex}`;
+    // const chunkName = `${timestamp}_${partIndex}`;
+    const chunkName = `${uuid.v4()}`;
 
     const sent = await bot.sendDocument(
       CHANNEL_ID,
