@@ -42,6 +42,7 @@ dbRun(`
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     original_name TEXT,
+    file_size INTEGER,
     file_ids TEXT
 )
 `);
@@ -127,10 +128,10 @@ async function uploadFile() {
 
   console.log("\n\n✅ Upload selesai!");
 
-  await dbRun("INSERT INTO files (original_name, file_ids) VALUES (?, ?)", [
-    originalName,
-    JSON.stringify(fileIds),
-  ]);
+  await dbRun(
+    "INSERT INTO files (original_name, file_size, file_ids) VALUES (?, ?, ?)",
+    [originalName, totalSize, JSON.stringify(fileIds)],
+  );
 }
 
 // ================= LIST =================
@@ -144,7 +145,8 @@ async function listFiles() {
 
   console.log("\n📂 File tersimpan:");
   rows.forEach((row, i) => {
-    console.log(`${i + 1}. ${row.original_name}`);
+    const sizeMB = (row.file_size / (1024 * 1024)).toFixed(2);
+    console.log(`${i + 1}. ${row.original_name} (${sizeMB} MB)`);
   });
 
   return rows;
@@ -163,6 +165,9 @@ async function downloadFile() {
   }
 
   const fileData = rows[index];
+  const sizeMB = (fileData.file_size / (1024 * 1024)).toFixed(2);
+  console.log(`📦 Nama: ${fileData.original_name}`);
+  console.log(`📦 Ukuran: ${sizeMB} MB\n`);
   const fileIds = JSON.parse(fileData.file_ids);
 
   console.log("⬇ Downloading & merging...\n");
