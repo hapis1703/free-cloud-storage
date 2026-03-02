@@ -1,10 +1,10 @@
-const TelegramBot = require("node-telegram-bot-api");
+const { Telegraf } = require("telegraf");
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
 const readline = require("readline-sync");
-const uuid = require("uuid");
+const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
 
 const TOKEN = process.env.TOKEN;
@@ -14,129 +14,109 @@ if (!TOKEN || !CHANNEL_ID) {
   console.error("❌ TOKEN or CHANNEL_ID is missing in .env file");
   process.exit(1);
 }
+
 const CHUNK_SIZE = 18 * 1024 * 1024;
 
-const bot = new TelegramBot(TOKEN);
-const db = new sqlite3.Database("./database.db");
+// ================= PROGRESS BAR =================
+function renderProgress(current, total, startTime) {
+  const percent = total > 0 ? current / total : 0;
+  const percentText = (percent * 100).toFixed(2);
 
-// ================= DATABASE PROMISE =================
-function dbAll(query, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(query, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
+  const barLength = 30;
+  const filledLength = Math.floor(barLength * percent);
+  const emptyLength = barLength - filledLength;
+
+  const bar = "█".repeat(filledLength) + "░".repeat(emptyLength);
+
+  const elapsed = (Date.now() - startTime) / 1000;
+  const speed = elapsed > 0 ? current / 1024 / 1024 / elapsed : 0;
+
+  const remainingBytes = total - current;
+  const eta = speed > 0 ? remainingBytes / 1024 / 1024 / speed : 0;
+
+  process.stdout.write(
+    `\r[${bar}] ${percentText}% | ⚡ ${speed.toFixed(2)} MB/s | ⏳ ETA ${eta.toFixed(1)}s`,
+  );
 }
 
-function dbRun(query, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(query, params, function (err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
-}
+const bot = new Telegraf(TOKEN);
+const db = new Database("./database.db");
 
-dbRun(`
+// ================= DATABASE =================
+db.prepare(
+  `
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     original_name TEXT,
     file_size INTEGER,
     file_ids TEXT
 )
-`);
+`,
+).run();
 
-// ================= UPLOAD (WITH PROGRESS + ETA) =================
+// ================= UPLOAD =================
 async function uploadFile() {
-  let filePath = readline.question("Masukkan path file: ");
+  let filePath = readline.question("Masukkan path file: ").trim();
 
-  // Trim whitespace
-  filePath = filePath.trim();
-
-  // Remove surrounding quotes if exist
   if (
     (filePath.startsWith('"') && filePath.endsWith('"')) ||
     (filePath.startsWith("'") && filePath.endsWith("'"))
   ) {
     filePath = filePath.slice(1, -1);
   }
+
   if (!fs.existsSync(filePath)) {
     console.log("❌ File tidak ditemukan.");
     return;
   }
 
   const originalName = path.basename(filePath);
-  const stats = fs.statSync(filePath);
-  const totalSize = stats.size;
+  const totalSize = fs.statSync(filePath).size;
 
-  console.log(`📦 Ukuran file: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
-
-  const startTime = Date.now();
-  let uploadedBytes = 0;
-
-  const now = new Date();
-  const timestamp =
-    now.getFullYear().toString() +
-    String(now.getMonth() + 1).padStart(2, "0") +
-    String(now.getDate()).padStart(2, "0") +
-    "_" +
-    String(now.getHours()).padStart(2, "0") +
-    String(now.getMinutes()).padStart(2, "0") +
-    String(now.getSeconds()).padStart(2, "0");
+  console.log(`📦 Ukuran file: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
 
   const readStream = fs.createReadStream(filePath, {
     highWaterMark: CHUNK_SIZE,
   });
 
-  let partIndex = 0;
   let fileIds = [];
+  let uploadedBytes = 0;
+  const startTime = Date.now();
 
   console.log("🚀 Mulai upload...\n");
 
+  let partIndex = 0;
+
   for await (const chunk of readStream) {
-    const tempFile = `temp_${timestamp}_${partIndex}`;
+    const tempFile = `temp_${Date.now()}_${partIndex}`;
     fs.writeFileSync(tempFile, chunk);
 
-    // const chunkName = `${timestamp}_${partIndex}`;
-    const chunkName = `${uuid.v4()}`;
-
-    const sent = await bot.sendDocument(
-      CHANNEL_ID,
-      tempFile,
-      {},
-      { filename: chunkName },
-    );
+    const sent = await bot.telegram.sendDocument(CHANNEL_ID, {
+      source: tempFile,
+      filename: uuidv4(),
+    });
 
     fileIds.push(sent.document.file_id);
     fs.unlinkSync(tempFile);
 
     uploadedBytes += chunk.length;
-
-    const percent = ((uploadedBytes / totalSize) * 100).toFixed(2);
-    const elapsed = (Date.now() - startTime) / 1000;
-    const speed = (uploadedBytes / 1024 / 1024 / elapsed).toFixed(2);
-    const remainingBytes = totalSize - uploadedBytes;
-    const eta = (remainingBytes / 1024 / 1024 / speed).toFixed(1);
-
-    process.stdout.write(
-      `\r📊 ${percent}% | ⚡ ${speed} MB/s | ⏳ ETA ${eta}s`,
-    );
-
+    renderProgress(uploadedBytes, totalSize, startTime);
     partIndex++;
   }
 
   console.log("\n\n✅ Upload selesai!");
 
-  await dbRun(
-    "INSERT INTO files (original_name, file_size, file_ids) VALUES (?, ?, ?)",
-    [originalName, totalSize, JSON.stringify(fileIds)],
-  );
+  db.prepare(
+    `
+    INSERT INTO files (original_name, file_size, file_ids)
+    VALUES (?, ?, ?)
+  `,
+  ).run(originalName, totalSize, JSON.stringify(fileIds));
 }
 
 // ================= LIST =================
-async function listFiles() {
-  const rows = await dbAll("SELECT * FROM files");
+function listFiles() {
+  const rows = db.prepare("SELECT * FROM files").all();
 
   if (!rows.length) {
     console.log("📂 Tidak ada file.");
@@ -145,16 +125,16 @@ async function listFiles() {
 
   console.log("\n📂 File tersimpan:");
   rows.forEach((row, i) => {
-    const sizeMB = (row.file_size / (1024 * 1024)).toFixed(2);
+    const sizeMB = (row.file_size / 1024 / 1024).toFixed(2);
     console.log(`${i + 1}. ${row.original_name} (${sizeMB} MB)`);
   });
 
   return rows;
 }
 
-// ================= DOWNLOAD (WITH PROGRESS + ETA) =================
+// ================= DOWNLOAD =================
 async function downloadFile() {
-  const rows = await listFiles();
+  const rows = listFiles();
   if (!rows.length) return;
 
   const index = readline.questionInt("\nPilih nomor file: ") - 1;
@@ -165,43 +145,30 @@ async function downloadFile() {
   }
 
   const fileData = rows[index];
-  const sizeMB = (fileData.file_size / (1024 * 1024)).toFixed(2);
+  const totalSize = fileData.file_size;
+  const sizeMB = (totalSize / 1024 / 1024).toFixed(2);
+
   console.log(`📦 Nama: ${fileData.original_name}`);
   console.log(`📦 Ukuran: ${sizeMB} MB\n`);
+
   const fileIds = JSON.parse(fileData.file_ids);
-
-  console.log("⬇ Downloading & merging...\n");
-
   const writeStream = fs.createWriteStream(fileData.original_name);
+
+  console.log("⬇ Downloading...\n");
 
   const startTime = Date.now();
   let downloadedBytes = 0;
 
-  for (let i = 0; i < fileIds.length; i++) {
-    const fileInfo = await bot.getFile(fileIds[i]);
+  for (let fileId of fileIds) {
+    const fileInfo = await bot.telegram.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
 
     const response = await axios.get(fileUrl, { responseType: "stream" });
 
-    const contentLength = parseInt(response.headers["content-length"] || 0);
-
     await new Promise((resolve) => {
       response.data.on("data", (chunk) => {
         downloadedBytes += chunk.length;
-
-        const elapsed = (Date.now() - startTime) / 1000;
-        const speed = (downloadedBytes / 1024 / 1024 / elapsed).toFixed(2);
-        const percent = (((i + 1) / fileIds.length) * 100).toFixed(2);
-        const eta = (
-          ((fileIds.length - (i + 1)) * contentLength) /
-          1024 /
-          1024 /
-          speed
-        ).toFixed(1);
-
-        process.stdout.write(
-          `\r📊 ${percent}% | ⚡ ${speed} MB/s | ⏳ ETA ${eta}s`,
-        );
+        renderProgress(downloadedBytes, totalSize, startTime);
       });
 
       response.data.pipe(writeStream, { end: false });
@@ -212,32 +179,24 @@ async function downloadFile() {
   writeStream.end();
   await new Promise((resolve) => writeStream.on("finish", resolve));
 
-  console.log("\n\n✅ Download selesai!");
+  console.log("\n✅ Download selesai!");
 }
 
 // ================= DELETE =================
-async function deleteFile() {
-  const rows = await listFiles();
-
+function deleteFile() {
+  const rows = listFiles();
   if (!rows.length) return;
 
-  const choice = readline.question(
-    "\nMasukkan nomor file yang ingin dihapus: ",
-  );
-  const index = parseInt(choice) - 1;
+  const index = readline.questionInt("\nPilih nomor file: ") - 1;
 
-  if (isNaN(index) || index < 0 || index >= rows.length) {
-    console.log("❌ Pilihan tidak valid.");
+  if (!rows[index]) {
+    console.log("❌ Index salah.");
     return;
   }
 
-  const selected = rows[index];
+  db.prepare("DELETE FROM files WHERE id = ?").run(rows[index].id);
 
-  await dbRun("DELETE FROM files WHERE id = ?", [selected.id]);
-
-  console.log(
-    `🗑 File "${selected.original_name}" berhasil dihapus dari database.`,
-  );
+  console.log(`🗑 File "${rows[index].original_name}" berhasil dihapus.`);
 }
 
 // ================= MENU =================
@@ -253,9 +212,9 @@ async function mainMenu() {
     const choice = readline.questionInt("Pilih menu: ");
 
     if (choice === 1) await uploadFile();
-    else if (choice === 2) await listFiles();
+    else if (choice === 2) listFiles();
     else if (choice === 3) await downloadFile();
-    else if (choice === 4) await deleteFile();
+    else if (choice === 4) deleteFile();
     else if (choice === 5) process.exit();
     else console.log("❌ Pilihan tidak valid.");
   }
