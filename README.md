@@ -1,21 +1,27 @@
-# 🚀 Telegram Cloud Storage CLI
+# 🚀 Telegram Encrypted Cloud Storage CLI
 
-CLI tool untuk menyimpan file ke Telegram sebagai cloud storage pribadi.
+CLI tool untuk menyimpan file ke Telegram sebagai cloud storage pribadi dengan enkripsi end-to-end.
 
-File otomatis dipecah menjadi beberapa bagian (18MB per part) lalu digabung kembali saat download.
+File otomatis:
+
+- Dipecah menjadi 18MB per part
+- Diencrypt (AES-256-GCM) per chunk
+- Digabung & didecrypt kembali saat download
 
 ---
 
 ## ✨ Features
 
 - ✅ Upload file besar (auto split 18MB)
+- ✅ AES-256-GCM encryption per chunk
+- ✅ End-to-End encrypted (Telegram tidak bisa baca isi file)
 - ✅ Progress bar real-time
 - ✅ Speed (MB/s)
 - ✅ ETA (Estimasi waktu selesai)
-- ✅ Simpan metadata (nama & ukuran file)
-- ✅ Download & merge otomatis
+- ✅ Download & auto decrypt
 - ✅ Hapus file dari database
-- ✅ Database cepat menggunakan better-sqlite3
+- ✅ Database ringan berbasis JSON (LowDB)
+- ✅ Compatible Windows & Termux
 
 ---
 
@@ -23,9 +29,10 @@ File otomatis dipecah menjadi beberapa bagian (18MB per part) lalu digabung kemb
 
 - Node.js
 - Telegraf
-- better-sqlite3
+- LowDB
 - Axios
 - dotenv
+- Crypto (built-in Node)
 
 ---
 
@@ -52,10 +59,10 @@ cd telegram-cloud-storage
 npm install
 ```
 
-Jika belum ada dependency:
+Jika manual:
 
 ```bash
-npm install telegraf better-sqlite3 axios readline-sync uuid dotenv
+npm install telegraf axios readline-sync uuid lowdb dotenv
 ```
 
 ---
@@ -67,9 +74,13 @@ Buat file `.env` di root project:
 ```env
 TOKEN=YOUR_BOT_TOKEN
 CHANNEL_ID=-1001234567890
+SECRET_KEY=super_rahasia_kamu
 ```
 
-⚠️ Jangan gunakan tanda kutip.
+⚠️ Jangan gunakan tanda kutip
+⚠️ SECRET_KEY WAJIB sama saat upload & download
+
+Jika SECRET_KEY berbeda → file tidak bisa didecrypt.
 
 ---
 
@@ -85,28 +96,21 @@ CHANNEL_ID=-1001234567890
 
 # 📢 Cara Mendapatkan CHANNEL_ID (PRIVATE CHANNEL)
 
-Karena channel private tidak memiliki username publik, gunakan cara berikut:
-
-### Langkah-langkah:
-
 1. Kirim pesan apa saja ke channel private
 2. Forward pesan tersebut ke bot `@RawDataBot`
-3. Cari bagian berikut pada JSON:
+3. Cari bagian:
 
 ```
 forward_origin.chat.id
 ```
 
-Contoh hasil (dummy):
+Contoh:
 
 ```json
 {
   "forward_origin": {
-    "type": "channel",
     "chat": {
-      "id": -1001234567890,
-      "title": "My Private Channel",
-      "type": "channel"
+      "id": -1001234567890
     }
   }
 }
@@ -131,7 +135,7 @@ Pastikan bot:
   - Send Media
   - Send Files
 
-Jika tidak, akan muncul error:
+Jika tidak, akan muncul:
 
 ```
 403: Forbidden: bot is not a member of the channel chat
@@ -141,8 +145,8 @@ Jika tidak, akan muncul error:
 
 ## ▶️ Menjalankan Program
 
-```
-node index.js
+```bash
+node cloud.js
 ```
 
 ---
@@ -162,11 +166,33 @@ node index.js
 
 ## 📊 Progress Bar Example
 
-Saat upload atau download:
-
 ```
 [██████████████░░░░░░░░░░░░] 48.32% | ⚡ 3.41 MB/s | ⏳ ETA 12.3s
 ```
+
+---
+
+# 🔐 Sistem Enkripsi
+
+Algoritma:
+
+```
+AES-256-GCM
+```
+
+Setiap chunk disimpan dalam format:
+
+```
+[IV (12 byte)] + [AuthTag (16 byte)] + [Encrypted Data]
+```
+
+Keamanan:
+
+- Tanpa SECRET_KEY → file tidak bisa dibuka
+- Telegram hanya menyimpan data terenkripsi
+- Bahkan jika file_id bocor → tetap aman
+
+⚠ Jika SECRET_KEY hilang, file tidak bisa dipulihkan.
 
 ---
 
@@ -175,17 +201,23 @@ Saat upload atau download:
 File database:
 
 ```
-database.db
+database.json
 ```
 
-Struktur tabel:
+Struktur:
 
-| Column        | Type    | Description             |
-| ------------- | ------- | ----------------------- |
-| id            | INTEGER | Primary key             |
-| original_name | TEXT    | Nama file asli          |
-| file_size     | INTEGER | Ukuran file dalam bytes |
-| file_ids      | TEXT    | Array file_id Telegram  |
+```json
+{
+  "files": [
+    {
+      "id": "uuid",
+      "original_name": "video.mp4",
+      "file_size": 123456789,
+      "file_ids": ["fileid1", "fileid2"]
+    }
+  ]
+}
+```
 
 ---
 
@@ -194,36 +226,29 @@ Struktur tabel:
 ### Upload
 
 1. File dibaca sebagai stream
-2. Dipecah menjadi 18MB per bagian
-3. Dikirim ke channel Telegram
-4. file_id tiap part disimpan di database
+2. Dipecah 18MB per chunk
+3. Tiap chunk diencrypt (AES-256-GCM)
+4. Dikirim ke Telegram
+5. file_id tiap part disimpan ke database
+
+---
 
 ### Download
 
 1. Ambil file_id dari database
 2. Download tiap part dari Telegram API
-3. Gabungkan menjadi file asli
+3. Decrypt tiap chunk
+4. Gabungkan menjadi file asli
 
 ---
 
 ## ⚠️ Notes
 
-- File di-split 18MB untuk stabilitas
+- Jangan ubah SECRET_KEY setelah upload
 - Pastikan koneksi internet stabil
-- Channel sebaiknya private untuk keamanan
-- Jangan share TOKEN ke publik
-
----
-
-## 💡 Future Improvements
-
-- Resume upload jika terputus
-- Parallel upload
-- AES encryption sebelum upload
-- Web dashboard version
-- Multi-user support
-- Docker support
-- Deploy ke VPS
+- Channel sebaiknya private
+- Jangan share TOKEN & SECRET_KEY ke publik
+- Backup file `.env` dan `database.json`
 
 ---
 
@@ -231,11 +256,24 @@ Struktur tabel:
 
 ```
 .
-├── index.js
-├── database.db
+├── cloud.js
+├── database.json
 ├── .env
 ├── package.json
 └── README.md
 ```
+
+---
+
+## 💡 Future Improvements
+
+- Resume upload jika terputus
+- Parallel upload
+- Compression sebelum encrypt
+- Password per file
+- Multi-user support
+- Web dashboard version
+- Docker support
+- Deploy ke VPS
 
 ---

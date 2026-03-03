@@ -13,9 +13,9 @@
   "type": "commonjs",
   "dependencies": {
     "axios": "^1.13.6",
-    "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
     "fs": "^0.0.1-security",
+    "lowdb": "^7.0.1",
     "path": "^0.12.7",
     "readline-sync": "^1.4.10",
     "telegraf": "^4.16.3",

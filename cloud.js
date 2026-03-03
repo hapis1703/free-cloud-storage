@@ -2,20 +2,62 @@ const { Telegraf } = require("telegraf");
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
-const Database = require("better-sqlite3");
 const readline = require("readline-sync");
 const { v4: uuidv4 } = require("uuid");
+const crypto = require("crypto");
+const { Low } = require("lowdb");
+const { JSONFile } = require("lowdb/node");
 require("dotenv").config();
 
+// ================= ENV =================
 const TOKEN = process.env.TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
+const SECRET_KEY = crypto
+  .createHash("sha256")
+  .update(process.env.SECRET_KEY || "default-secret")
+  .digest();
 
 if (!TOKEN || !CHANNEL_ID) {
-  console.error("❌ TOKEN or CHANNEL_ID is missing in .env file");
+  console.error("❌ TOKEN or CHANNEL_ID missing in .env");
   process.exit(1);
 }
 
 const CHUNK_SIZE = 18 * 1024 * 1024;
+
+// ================= DATABASE =================
+const adapter = new JSONFile("database.json");
+const db = new Low(adapter, { files: [] });
+
+async function initDB() {
+  await db.read();
+  await db.write();
+}
+
+// ================= ENCRYPTION =================
+function encryptChunk(buffer) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", SECRET_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  return Buffer.concat([iv, authTag, encrypted]);
+}
+
+function decryptChunk(buffer) {
+  try {
+    const iv = buffer.slice(0, 12);
+    const authTag = buffer.slice(12, 28);
+    const encryptedData = buffer.slice(28);
+
+    const decipher = crypto.createDecipheriv("aes-256-gcm", SECRET_KEY, iv);
+    decipher.setAuthTag(authTag);
+
+    return Buffer.concat([decipher.update(encryptedData), decipher.final()]);
+  } catch (err) {
+    console.error("\n❌ Decrypt gagal! Kemungkinan SECRET_KEY berbeda.");
+    throw err;
+  }
+}
 
 // ================= PROGRESS BAR =================
 function renderProgress(current, total, startTime) {
@@ -30,7 +72,6 @@ function renderProgress(current, total, startTime) {
 
   const elapsed = (Date.now() - startTime) / 1000;
   const speed = elapsed > 0 ? current / 1024 / 1024 / elapsed : 0;
-
   const remainingBytes = total - current;
   const eta = speed > 0 ? remainingBytes / 1024 / 1024 / speed : 0;
 
@@ -40,30 +81,11 @@ function renderProgress(current, total, startTime) {
 }
 
 const bot = new Telegraf(TOKEN);
-const db = new Database("./database.db");
-
-// ================= DATABASE =================
-db.prepare(
-  `
-CREATE TABLE IF NOT EXISTS files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    original_name TEXT,
-    file_size INTEGER,
-    file_ids TEXT
-)
-`,
-).run();
 
 // ================= UPLOAD =================
 async function uploadFile() {
   let filePath = readline.question("Masukkan path file: ").trim();
-
-  if (
-    (filePath.startsWith('"') && filePath.endsWith('"')) ||
-    (filePath.startsWith("'") && filePath.endsWith("'"))
-  ) {
-    filePath = filePath.slice(1, -1);
-  }
+  filePath = filePath.replace(/^["']|["']$/g, "");
 
   if (!fs.existsSync(filePath)) {
     console.log("❌ File tidak ditemukan.");
@@ -74,6 +96,7 @@ async function uploadFile() {
   const totalSize = fs.statSync(filePath).size;
 
   console.log(`📦 Ukuran file: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+  console.log("🚀 Mulai upload...\n");
 
   const readStream = fs.createReadStream(filePath, {
     highWaterMark: CHUNK_SIZE,
@@ -81,15 +104,14 @@ async function uploadFile() {
 
   let fileIds = [];
   let uploadedBytes = 0;
+  let partIndex = 0;
   const startTime = Date.now();
 
-  console.log("🚀 Mulai upload...\n");
-
-  let partIndex = 0;
-
   for await (const chunk of readStream) {
+    const encryptedBuffer = encryptChunk(chunk);
+
     const tempFile = `temp_${Date.now()}_${partIndex}`;
-    fs.writeFileSync(tempFile, chunk);
+    fs.writeFileSync(tempFile, encryptedBuffer);
 
     const sent = await bot.telegram.sendDocument(CHANNEL_ID, {
       source: tempFile,
@@ -101,22 +123,25 @@ async function uploadFile() {
 
     uploadedBytes += chunk.length;
     renderProgress(uploadedBytes, totalSize, startTime);
+
     partIndex++;
   }
 
-  console.log("\n\n✅ Upload selesai!");
+  db.data.files.push({
+    id: uuidv4(),
+    original_name: originalName,
+    file_size: totalSize,
+    file_ids: fileIds,
+  });
 
-  db.prepare(
-    `
-    INSERT INTO files (original_name, file_size, file_ids)
-    VALUES (?, ?, ?)
-  `,
-  ).run(originalName, totalSize, JSON.stringify(fileIds));
+  await db.write();
+
+  console.log("\n\n✅ Upload selesai!");
 }
 
 // ================= LIST =================
 function listFiles() {
-  const rows = db.prepare("SELECT * FROM files").all();
+  const rows = db.data.files;
 
   if (!rows.length) {
     console.log("📂 Tidak ada file.");
@@ -138,65 +163,59 @@ async function downloadFile() {
   if (!rows.length) return;
 
   const index = readline.questionInt("\nPilih nomor file: ") - 1;
-
   if (!rows[index]) {
     console.log("❌ Index salah.");
     return;
   }
 
   const fileData = rows[index];
-  const totalSize = fileData.file_size;
-  const sizeMB = (totalSize / 1024 / 1024).toFixed(2);
-
-  console.log(`📦 Nama: ${fileData.original_name}`);
-  console.log(`📦 Ukuran: ${sizeMB} MB\n`);
-
-  const fileIds = JSON.parse(fileData.file_ids);
   const writeStream = fs.createWriteStream(fileData.original_name);
 
-  console.log("⬇ Downloading...\n");
+  console.log("\n⬇ Downloading...\n");
 
   const startTime = Date.now();
   let downloadedBytes = 0;
 
-  for (let fileId of fileIds) {
+  for (let fileId of fileData.file_ids) {
     const fileInfo = await bot.telegram.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
 
-    const response = await axios.get(fileUrl, { responseType: "stream" });
+    const response = await axios.get(fileUrl, { responseType: "arraybuffer" });
 
-    await new Promise((resolve) => {
-      response.data.on("data", (chunk) => {
-        downloadedBytes += chunk.length;
-        renderProgress(downloadedBytes, totalSize, startTime);
-      });
+    const encryptedBuffer = Buffer.from(response.data);
 
-      response.data.pipe(writeStream, { end: false });
-      response.data.on("end", resolve);
-    });
+    if (encryptedBuffer.length < 28) {
+      console.log("❌ Chunk corrupt atau kosong!");
+      return;
+    }
+
+    const decrypted = decryptChunk(encryptedBuffer);
+
+    writeStream.write(decrypted);
+
+    downloadedBytes += decrypted.length;
+    renderProgress(downloadedBytes, fileData.file_size, startTime);
   }
 
-  writeStream.end();
-  await new Promise((resolve) => writeStream.on("finish", resolve));
-
-  console.log("\n✅ Download selesai!");
+  await new Promise((resolve) => writeStream.end(resolve));
+  console.log("\n\n✅ Download selesai!");
 }
 
 // ================= DELETE =================
-function deleteFile() {
+async function deleteFile() {
   const rows = listFiles();
   if (!rows.length) return;
 
   const index = readline.questionInt("\nPilih nomor file: ") - 1;
-
   if (!rows[index]) {
     console.log("❌ Index salah.");
     return;
   }
 
-  db.prepare("DELETE FROM files WHERE id = ?").run(rows[index].id);
+  db.data.files = db.data.files.filter((f) => f.id !== rows[index].id);
 
-  console.log(`🗑 File "${rows[index].original_name}" berhasil dihapus.`);
+  await db.write();
+  console.log(`🗑 File "${rows[index].original_name}" dihapus.`);
 }
 
 // ================= MENU =================
@@ -214,10 +233,14 @@ async function mainMenu() {
     if (choice === 1) await uploadFile();
     else if (choice === 2) listFiles();
     else if (choice === 3) await downloadFile();
-    else if (choice === 4) deleteFile();
+    else if (choice === 4) await deleteFile();
     else if (choice === 5) process.exit();
     else console.log("❌ Pilihan tidak valid.");
   }
 }
 
-mainMenu();
+// ================= START =================
+(async () => {
+  await initDB();
+  mainMenu();
+})();
