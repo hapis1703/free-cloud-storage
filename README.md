@@ -49,8 +49,8 @@ File otomatis:
 ### 1️⃣ Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/telegram-cloud-storage.git
-cd telegram-cloud-storage
+git clone https://github.com/hapis1703/free-cloud-storage.git
+cd free-cloud-storage
 ```
 
 ### 2️⃣ Install Dependencies
@@ -146,7 +146,7 @@ Jika tidak, akan muncul:
 ## ▶️ Menjalankan Program
 
 ```bash
-node cloud.js
+npm run start
 ```
 
 ---

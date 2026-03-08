@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require("uuid");
 const crypto = require("crypto");
 const { Low } = require("lowdb");
 const { JSONFile } = require("lowdb/node");
+const { sendDatabaseBackup } = require("./backup");
 require("dotenv").config();
 
 // ================= ENV =================
@@ -135,6 +136,7 @@ async function uploadFile() {
   });
 
   await db.write();
+  await sendDatabaseBackup();
 
   console.log("\n\n✅ Upload selesai!");
 }
@@ -225,16 +227,18 @@ async function mainMenu() {
     console.log("1. Upload File");
     console.log("2. List File");
     console.log("3. Download File");
-    console.log("4. Delete File");
-    console.log("5. Exit");
+    console.log("4. Backup Database");
+    console.log("5. Delete File");
+    console.log("6. Exit");
 
     const choice = readline.questionInt("Pilih menu: ");
 
     if (choice === 1) await uploadFile();
     else if (choice === 2) listFiles();
     else if (choice === 3) await downloadFile();
-    else if (choice === 4) await deleteFile();
-    else if (choice === 5) process.exit();
+    else if (choice === 4) await sendDatabaseBackup();
+    else if (choice === 5) await deleteFile();
+    else if (choice === 6) process.exit();
     else console.log("❌ Pilihan tidak valid.");
   }
 }
